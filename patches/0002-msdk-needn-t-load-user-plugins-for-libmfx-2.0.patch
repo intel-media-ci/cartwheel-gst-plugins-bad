@@ -1,0 +1,62 @@
+From bafed512d3f2c2ecd342bdb2b6faab92a550ec6c Mon Sep 17 00:00:00 2001
+From: Haihao Xiang <haihao.xiang@intel.com>
+Date: Tue, 4 Aug 2020 12:53:35 +0800
+Subject: [PATCH 2/3] msdk: needn't load user plugins for libmfx 2.0
+
+libmfx no longer supports user plugins since version 2.0, please refer
+to the links below for details
+
+https://spec.oneapi.com/versions/latest/elements/oneVPL/source/VPL_intel_media_sdk.html#msdk-full-name-feature-removals
+https://github.com/oneapi-src/oneVPL
+---
+ sys/msdk/msdk.c |  2 ++
+ sys/msdk/msdk.h | 12 ++++++++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/sys/msdk/msdk.c b/sys/msdk/msdk.c
+index 74ff13c77c43..e0c50ad9e96e 100644
+--- a/sys/msdk/msdk.c
++++ b/sys/msdk/msdk.c
+@@ -498,6 +498,7 @@ gboolean
+ gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
+     mfxU32 version, const gchar * plugin)
+ {
++#if (MFX_VERSION < 2000)
+   mfxStatus status;
+ 
+   status = MFXVideoUSER_Load (session, uid, version);
+@@ -512,6 +513,7 @@ gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
+     GST_WARNING ("Media SDK Plugin for %s load warning: %s", plugin,
+         msdk_status_to_string (status));
+   }
++#endif
+ 
+   return TRUE;
+ }
+diff --git a/sys/msdk/msdk.h b/sys/msdk/msdk.h
+index 87867f6eda7d..8f11d80937d1 100644
+--- a/sys/msdk/msdk.h
++++ b/sys/msdk/msdk.h
+@@ -43,7 +43,19 @@
+ #include <gst/allocators/allocators.h>
+ 
+ #include <mfxvideo.h>
++
++#if (MFX_VERSION < 2000)
+ #include <mfxplugin.h>
++#else
++#define mfxPluginUID char
++static const char MFX_PLUGINID_HEVCD_SW;
++static const char MFX_PLUGINID_HEVCD_HW;
++static const char MFX_PLUGINID_HEVCE_SW;
++static const char MFX_PLUGINID_HEVCE_HW;
++static const char MFX_PLUGINID_VP8D_HW;
++static const char MFX_PLUGINID_VP9E_HW;
++static const char MFX_PLUGINID_VP9D_HW;
++#endif
+ 
+ G_BEGIN_DECLS
+ 
+-- 
+2.25.4
+

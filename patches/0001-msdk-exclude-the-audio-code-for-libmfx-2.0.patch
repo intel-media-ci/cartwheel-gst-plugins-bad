@@ -1,0 +1,44 @@
+From 3d0978e7a357905890318f2638ef49cc85981eb9 Mon Sep 17 00:00:00 2001
+From: Haihao Xiang <haihao.xiang@intel.com>
+Date: Tue, 4 Aug 2020 12:55:35 +0800
+Subject: [PATCH 1/3] msdk: exclude the audio code for libmfx 2.0
+
+libmfx no longer supports audio since version 2.0, please refer to the
+links below for details
+https://spec.oneapi.com/versions/latest/elements/oneVPL/source/VPL_intel_media_sdk.html#msdk-full-name-feature-removals
+https://github.com/oneapi-src/oneVPL
+---
+ sys/msdk/msdk.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/sys/msdk/msdk.c b/sys/msdk/msdk.c
+index 68c2ae25d9a8..74ff13c77c43 100644
+--- a/sys/msdk/msdk.c
++++ b/sys/msdk/msdk.c
+@@ -123,10 +123,12 @@ msdk_status_to_string (mfxStatus status)
+       return "device operation failure";
+     case MFX_ERR_MORE_BITSTREAM:
+       return "expect more bitstream buffers at output";
++#if (MFX_VERSION < 2000)
+     case MFX_ERR_INCOMPATIBLE_AUDIO_PARAM:
+       return "incompatible audio parameters";
+     case MFX_ERR_INVALID_AUDIO_PARAM:
+       return "invalid audio parameters";
++#endif
+       /* warnings >0 */
+     case MFX_WRN_IN_EXECUTION:
+       return "the previous asynchronous operation is in execution";
+@@ -144,8 +146,10 @@ msdk_status_to_string (mfxStatus status)
+       return "the value is out of valid range";
+     case MFX_WRN_FILTER_SKIPPED:
+       return "one of requested filters has been skipped";
++#if (MFX_VERSION < 2000)
+     case MFX_WRN_INCOMPATIBLE_AUDIO_PARAM:
+       return "incompatible audio parameters";
++#endif
+     default:
+       break;
+   }
+-- 
+2.25.4
+
