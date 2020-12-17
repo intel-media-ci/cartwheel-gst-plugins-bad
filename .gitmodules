@@ -1,0 +1,4 @@
+[submodule "gst-plugins-bad"]
+	path = gst-plugins-bad
+	url = https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad.git
+	branch = master
