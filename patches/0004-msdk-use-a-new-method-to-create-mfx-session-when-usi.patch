@@ -1,0 +1,406 @@
+From a69d5ba07bbc1820018c2096808ca178fa9b7ed6 Mon Sep 17 00:00:00 2001
+From: Haihao Xiang <haihao.xiang@intel.com>
+Date: Thu, 4 Feb 2021 15:27:13 +0800
+Subject: [PATCH 4/5] msdk: use a new method to create mfx session when using
+ oneVPL dispatcher
+
+In oneVPL, MFXLoad() and MFXCreateSession() are required to create a
+workable mfx session[1]
+
+[1] https://spec.oneapi.com/versions/latest/elements/oneVPL/source/programming_guide/VPL_prg_session.html#onevpl-dispatcher
+---
+ sys/msdk/gstmsdkcontext.c |  31 ++++---
+ sys/msdk/msdk.c           | 178 ++++++++++++++++++++++++++++++++++----
+ sys/msdk/msdk.h           |  25 +++++-
+ 3 files changed, 205 insertions(+), 29 deletions(-)
+
+diff --git a/sys/msdk/gstmsdkcontext.c b/sys/msdk/gstmsdkcontext.c
+index df635c7ff..763e5893d 100644
+--- a/sys/msdk/gstmsdkcontext.c
++++ b/sys/msdk/gstmsdkcontext.c
+@@ -44,7 +44,7 @@ GST_DEBUG_CATEGORY_STATIC (gst_debug_msdkcontext);
+ 
+ struct _GstMsdkContextPrivate
+ {
+-  mfxSession session;
++  MsdkSession session;
+   GList *cached_alloc_responses;
+   gboolean hardware;
+   gboolean is_joined;
+@@ -179,7 +179,7 @@ gst_msdk_context_use_vaapi (GstMsdkContext * context)
+     goto failed;
+   }
+ 
+-  status = MFXVideoCORE_SetHandle (priv->session, MFX_HANDLE_VA_DISPLAY,
++  status = MFXVideoCORE_SetHandle (priv->session.session, MFX_HANDLE_VA_DISPLAY,
+       (mfxHDL) va_dpy);
+   if (status != MFX_ERR_NONE) {
+     GST_ERROR ("Setting VAAPI handle failed (%s)",
+@@ -206,12 +206,15 @@ gst_msdk_context_open (GstMsdkContext * context, gboolean hardware,
+ {
+   mfxU16 codename;
+   GstMsdkContextPrivate *priv = context->priv;
++  MsdkSession msdk_session;
+ 
+   priv->job_type = job_type;
+   priv->hardware = hardware;
+-  priv->session =
++
++  msdk_session =
+       msdk_open_session (hardware ? MFX_IMPL_HARDWARE_ANY : MFX_IMPL_SOFTWARE);
+-  if (!priv->session)
++  priv->session = msdk_session;
++  if (!priv->session.session)
+     goto failed;
+ 
+ #ifndef _WIN32
+@@ -223,7 +226,7 @@ gst_msdk_context_open (GstMsdkContext * context, gboolean hardware,
+   }
+ #endif
+ 
+-  codename = msdk_get_platform_codename (priv->session);
++  codename = msdk_get_platform_codename (priv->session.session);
+ 
+   if (codename != MFX_PLATFORM_UNKNOWN)
+     GST_INFO ("Detected MFX platform with device code %d", codename);
+@@ -255,7 +258,7 @@ release_child_session (gpointer session)
+   status = MFXDisjoinSession (_session);
+   if (status != MFX_ERR_NONE)
+     GST_WARNING ("failed to disjoin (%s)", msdk_status_to_string (status));
+-  msdk_close_session (_session);
++  msdk_close_mfx_session (_session);
+ }
+ 
+ static void
+@@ -270,7 +273,7 @@ gst_msdk_context_finalize (GObject * obj)
+   else
+     g_list_free_full (priv->child_session_list, release_child_session);
+ 
+-  msdk_close_session (priv->session);
++  msdk_close_session (&priv->session);
+   g_mutex_clear (&priv->mutex);
+ 
+ #ifndef _WIN32
+@@ -314,24 +317,28 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
+   GstMsdkContextPrivate *priv = obj->priv;
+   GstMsdkContextPrivate *parent_priv = parent->priv;
+ 
+-  status = MFXCloneSession (parent_priv->session, &priv->session);
++  status =
++      MFXCloneSession (parent_priv->session.session, &priv->session.session);
+   if (status != MFX_ERR_NONE) {
+     GST_ERROR ("Failed to clone mfx session");
+     g_object_unref (obj);
+     return NULL;
+   }
+ 
++  /* Set loader to NULL for child session */
++  priv->session.loader = NULL;
+   priv->is_joined = TRUE;
+   priv->hardware = parent_priv->hardware;
+   priv->job_type = parent_priv->job_type;
+   parent_priv->child_session_list =
+-      g_list_prepend (parent_priv->child_session_list, priv->session);
++      g_list_prepend (parent_priv->child_session_list, priv->session.session);
+ #ifndef _WIN32
+   priv->dpy = parent_priv->dpy;
+   priv->fd = parent_priv->fd;
+ 
+   if (priv->hardware) {
+-    status = MFXVideoCORE_SetHandle (priv->session, MFX_HANDLE_VA_DISPLAY,
++    status =
++        MFXVideoCORE_SetHandle (priv->session.session, MFX_HANDLE_VA_DISPLAY,
+         (mfxHDL) parent_priv->dpy);
+ 
+     if (status != MFX_ERR_NONE) {
+@@ -350,7 +357,7 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
+ mfxSession
+ gst_msdk_context_get_session (GstMsdkContext * context)
+ {
+-  return context->priv->session;
++  return context->priv->session.session;
+ }
+ 
+ gpointer
+@@ -659,7 +666,7 @@ gst_msdk_context_set_frame_allocator (GstMsdkContext * context,
+   if (!priv->has_frame_allocator) {
+     mfxStatus status;
+ 
+-    status = MFXVideoCORE_SetFrameAllocator (priv->session, allocator);
++    status = MFXVideoCORE_SetFrameAllocator (priv->session.session, allocator);
+ 
+     if (status != MFX_ERR_NONE)
+       GST_ERROR ("Failed to set frame allocator");
+diff --git a/sys/msdk/msdk.c b/sys/msdk/msdk.c
+index d0859912d..541e2ec7d 100644
+--- a/sys/msdk/msdk.c
++++ b/sys/msdk/msdk.c
+@@ -174,8 +174,149 @@ msdk_get_platform_codename (mfxSession session)
+   return codename;
+ }
+ 
++#if (MFX_VERSION >= 2000)
++
++mfxStatus
++msdk_init_msdk_session (mfxIMPL impl, mfxVersion * pver,
++    MsdkSession * msdk_session)
++{
++  mfxStatus sts = MFX_ERR_NONE;
++  mfxLoader loader = NULL;
++  mfxSession session = NULL;
++  uint32_t impl_idx = 0;
++  mfxConfig cfg;
++  mfxVariant impl_value;
++
++  loader = msdk_session->loader;
++
++  if (!loader) {
++    loader = MFXLoad ();
++
++    GST_INFO ("Use the Intel oneVPL SDK to create MFX session");
++
++    if (!loader) {
++      GST_ERROR ("Failed to create a MFX loader");
++      return MFX_ERR_UNKNOWN;
++    }
++
++    /* Create configurations for implementation */
++    cfg = MFXCreateConfig (loader);
++
++    if (!cfg) {
++      GST_ERROR ("Failed to create a MFX configuration");
++      MFXUnload (loader);
++      return MFX_ERR_UNKNOWN;
++    }
++
++    impl_value.Type = MFX_VARIANT_TYPE_U32;
++    impl_value.Data.U32 =
++        (impl ==
++        MFX_IMPL_SOFTWARE) ? MFX_IMPL_TYPE_SOFTWARE : MFX_IMPL_TYPE_HARDWARE;
++    sts =
++        MFXSetConfigFilterProperty (cfg,
++        (const mfxU8 *) "mfxImplDescription.Impl", impl_value);
++
++    if (sts != MFX_ERR_NONE) {
++      GST_ERROR ("Failed to add an additional MFX configuration (%s)",
++          msdk_status_to_string (sts));
++      MFXUnload (loader);
++      return sts;
++    }
++
++    impl_value.Type = MFX_VARIANT_TYPE_U32;
++    impl_value.Data.U32 = pver->Version;
++    sts =
++        MFXSetConfigFilterProperty (cfg,
++        (const mfxU8 *) "mfxImplDescription.ApiVersion.Version", impl_value);
++
++    if (sts != MFX_ERR_NONE) {
++      GST_ERROR ("Failed to add an additional MFX configuration (%s)",
++          msdk_status_to_string (sts));
++      MFXUnload (loader);
++      return sts;
++    }
++  }
++
++  while (1) {
++    /* Enumerate all implementations */
++    mfxImplDescription *impl_desc;
++
++    sts = MFXEnumImplementations (loader, impl_idx,
++        MFX_IMPLCAPS_IMPLDESCSTRUCTURE, (mfxHDL *) & impl_desc);
++
++    /* Failed to find an available implementation */
++    if (sts == MFX_ERR_NOT_FOUND)
++      break;
++    else if (sts != MFX_ERR_NONE) {
++      impl_idx++;
++      continue;
++    }
++
++    sts = MFXCreateSession (loader, impl_idx, &session);
++    MFXDispReleaseImplDescription (loader, impl_desc);
++
++    if (sts == MFX_ERR_NONE)
++      break;
++
++    impl_idx++;
++  }
++
++  if (sts != MFX_ERR_NONE) {
++    GST_ERROR ("Failed to create a MFX session (%s)",
++        msdk_status_to_string (sts));
++
++    if (!msdk_session->loader)
++      MFXUnload (loader);
++
++    return sts;
++  }
++
++  msdk_session->session = session;
++  msdk_session->loader = loader;
++
++  return MFX_ERR_NONE;
++}
++
++#else
++
++mfxStatus
++msdk_init_msdk_session (mfxIMPL impl, mfxVersion * pver,
++    MsdkSession * msdk_session)
++{
++  mfxStatus status;
++  mfxSession session = NULL;
++  mfxInitParam init_par = { impl, *pver };
++
++  GST_INFO ("Use the Intel Media SDK to create MFX session");
++
++#if (MFX_VERSION >= 1025)
++  init_par.GPUCopy = 1;
++#endif
++
++  status = MFXInitEx (init_par, &session);
++
++  if (status != MFX_ERR_NONE) {
++    GST_ERROR ("Failed to initialize a MFX session (%s)",
++        msdk_status_to_string (status));
++    return status;
++  }
++
++  msdk_session->session = session;
++  msdk_session->loader = NULL;
++
++  return MFX_ERR_NONE;
++}
++
++void
++MFXUnload (mfxLoader loader)
++{
++  g_assert (loader == NULL);
++}
++
++#endif
++
+ void
+-msdk_close_session (mfxSession session)
++msdk_close_mfx_session (mfxSession session)
+ {
+   mfxStatus status;
+ 
+@@ -187,31 +328,36 @@ msdk_close_session (mfxSession session)
+     GST_ERROR ("Close failed (%s)", msdk_status_to_string (status));
+ }
+ 
+-mfxSession
++void
++msdk_close_session (MsdkSession * msdk_session)
++{
++  msdk_close_mfx_session (msdk_session->session);
++  MFXUnload (msdk_session->loader);
++}
++
++MsdkSession
+ msdk_open_session (mfxIMPL impl)
+ {
+   mfxSession session = NULL;
+   mfxVersion version = { {1, 1}
+   };
+-  mfxInitParam init_par = { impl, version };
+   mfxIMPL implementation;
+   mfxStatus status;
++  MsdkSession msdk_session;
+ 
+   static const gchar *implementation_names[] = {
+     "AUTO", "SOFTWARE", "HARDWARE", "AUTO_ANY", "HARDWARE_ANY", "HARDWARE2",
+     "HARDWARE3", "HARDWARE4", "RUNTIME"
+   };
+ 
+-#if (MFX_VERSION >= 1025)
+-  init_par.GPUCopy = 1;
+-#endif
++  msdk_session.session = NULL;
++  msdk_session.loader = NULL;
++  status = msdk_init_msdk_session (impl, &version, &msdk_session);
+ 
+-  status = MFXInitEx (init_par, &session);
+-  if (status != MFX_ERR_NONE) {
+-    GST_ERROR ("Intel Media SDK not available (%s)",
+-        msdk_status_to_string (status));
+-    goto failed;
+-  }
++  if (status != MFX_ERR_NONE)
++    return msdk_session;
++  else
++    session = msdk_session.session;
+ 
+   status = MFXQueryIMPL (session, &implementation);
+   if (status != MFX_ERR_NONE) {
+@@ -230,11 +376,13 @@ msdk_open_session (mfxIMPL impl)
+       implementation_names[MFX_IMPL_BASETYPE (implementation)]);
+   GST_INFO ("MFX version: %d.%d", version.Major, version.Minor);
+ 
+-  return session;
++  return msdk_session;
+ 
+ failed:
+-  msdk_close_session (session);
+-  return NULL;
++  msdk_close_session (&msdk_session);
++  msdk_session.session = NULL;
++  msdk_session.loader = NULL;
++  return msdk_session;
+ }
+ 
+ gboolean
+diff --git a/sys/msdk/msdk.h b/sys/msdk/msdk.h
+index 8f11d8093..1d25a4c38 100644
+--- a/sys/msdk/msdk.h
++++ b/sys/msdk/msdk.h
+@@ -47,6 +47,8 @@
+ #if (MFX_VERSION < 2000)
+ #include <mfxplugin.h>
+ #else
++#include <mfxdispatcher.h>
++
+ #define mfxPluginUID char
+ static const char MFX_PLUGINID_HEVCD_SW;
+ static const char MFX_PLUGINID_HEVCD_HW;
+@@ -75,8 +77,23 @@ G_BEGIN_DECLS
+   GST_MSDK_CAPS_MAKE (format) "; " \
+   GST_MSDK_CAPS_MAKE_WITH_DMABUF_FEATURE (dmaformat)
+ 
+-mfxSession msdk_open_session (mfxIMPL impl);
+-void msdk_close_session (mfxSession session);
++#if (MFX_VERSION < 2000)
++typedef void * mfxLoader;
++
++void MFXUnload (mfxLoader loader);
++#endif
++
++typedef struct _MsdkSession MsdkSession;
++
++struct _MsdkSession
++{
++  mfxSession session;
++  mfxLoader loader;
++};
++
++MsdkSession msdk_open_session (mfxIMPL impl);
++void msdk_close_mfx_session (mfxSession session);
++void msdk_close_session (MsdkSession * session);
+ 
+ gboolean msdk_is_available (void);
+ 
+@@ -119,6 +136,10 @@ gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
+ mfxU16
+ msdk_get_platform_codename (mfxSession session);
+ 
++mfxStatus
++msdk_init_msdk_session (mfxIMPL impl, mfxVersion * pver,
++    MsdkSession * msdk_session);
++
+ G_END_DECLS
+ 
+ #endif /* __MSDK_H__ */
+-- 
+2.25.1
+

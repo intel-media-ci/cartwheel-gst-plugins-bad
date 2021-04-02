@@ -1,0 +1,151 @@
+From 181c394de9b1405a130677834fdf572c43f4af3b Mon Sep 17 00:00:00 2001
+From: Haihao Xiang <haihao.xiang@intel.com>
+Date: Thu, 18 Feb 2021 13:38:25 +0800
+Subject: [PATCH 3/5] msdk: allow user build this plugin against oneVPL 2.2+
+
+User may use -Dmfx_api=MSDK or -Dmfx_api=oneVPL to select the MFX api
+for MSDK plugin. When -Dmfx_api is set to auto or -Dmfx_api is not used,
+meson will check the Intel Media SDK firstly, then the oneVPL SDK.
+
+In addition, mfxvp9.h was removed from oneVPL 2.2 and the definitions
+were moved to core headers
+---
+ meson_options.txt        |  4 +++
+ sys/msdk/gstmsdkvp9dec.c |  2 ++
+ sys/msdk/meson.build     | 74 +++++++++++++++++++++++++++-------------
+ 3 files changed, 56 insertions(+), 24 deletions(-)
+
+diff --git a/meson_options.txt b/meson_options.txt
+index 4b8eaa361..0b8c7b506 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -184,6 +184,10 @@ option('hls-crypto', type : 'combo', value : 'auto', choices : ['auto', 'nettle'
+ option('sctp-internal-usrsctp', type: 'feature', value : 'enabled',
+        description: 'Whether to use the bundled usrsctp library or the system one')
+ 
++# MSDK plugin options
++option('mfx_api', type : 'combo', choices : ['MSDK', 'oneVPL', 'auto'], value : 'auto',
++       description : 'Select MFX API to build against')
++
+ # Common feature options
+ option('examples', type : 'feature', value : 'auto', yield : true)
+ option('tests', type : 'feature', value : 'auto', yield : true)
+diff --git a/sys/msdk/gstmsdkvp9dec.c b/sys/msdk/gstmsdkvp9dec.c
+index eb2a6bb33..df3f0abac 100644
+--- a/sys/msdk/gstmsdkvp9dec.c
++++ b/sys/msdk/gstmsdkvp9dec.c
+@@ -38,7 +38,9 @@
+ #include "gstmsdkvp9dec.h"
+ #include "gstmsdkvideomemory.h"
+ 
++#if (MFX_VERSION < 2000)
+ #include <mfxvp9.h>
++#endif
+ 
+ GST_DEBUG_CATEGORY_EXTERN (gst_msdkvp9dec_debug);
+ #define GST_CAT_DEFAULT gst_msdkvp9dec_debug
+diff --git a/sys/msdk/meson.build b/sys/msdk/meson.build
+index 98570e5ba..9e95973f2 100644
+--- a/sys/msdk/meson.build
++++ b/sys/msdk/meson.build
+@@ -32,47 +32,73 @@ endif
+ 
+ have_msdk = false
+ msdk_dep = []
++use_msdk = false
++use_onevpl = false
+ 
+ msdk_option = get_option('msdk')
+ if msdk_option.disabled()
+   subdir_done()
+ endif
+ 
+-mfx_dep = dependency('libmfx', required: false)
+-if mfx_dep.found()
+-  mfx_incdir = mfx_dep.get_pkgconfig_variable('includedir')
+-  mfx_inc = []
+-else
+-  # Old versions of MediaSDK don't provide a pkg-config file
+-  mfx_root = run_command(python3, '-c', 'import os; print(os.environ.get("INTELMEDIASDKROOT", os.environ.get("MFX_HOME", "")))').stdout().strip()
+-
+-  if mfx_root != ''
+-    mfx_libdir = [mfx_root + '/lib/lin_x64', mfx_root + '/lib/x64', mfx_root + '/lib64', mfx_root + '/lib']
+-    if host_machine.system() == 'windows'
+-      if host_machine.cpu_family() == 'x86'
+-        mfx_libdir = [mfx_root + '/lib/win32']
+-      else
+-        mfx_libdir = [mfx_root + '/lib/x64']
++mfx_api = get_option('mfx_api')
++
++if mfx_api != 'oneVPL'
++  mfx_dep = dependency('libmfx', version: ['>= 1.0', '<= 1.99'], required: false)
++
++  if mfx_dep.found()
++    mfx_incdir = mfx_dep.get_pkgconfig_variable('includedir')
++    mfx_inc = []
++    use_msdk = true
++  else
++    # Old versions of MediaSDK don't provide a pkg-config file
++    mfx_root = run_command(python3, '-c', 'import os; print(os.environ.get("INTELMEDIASDKROOT", os.environ.get("MFX_HOME", "")))').stdout().strip()
++
++    if mfx_root != ''
++      mfx_libdir = [mfx_root + '/lib/lin_x64', mfx_root + '/lib/x64', mfx_root + '/lib64', mfx_root + '/lib']
++      if host_machine.system() == 'windows'
++        if host_machine.cpu_family() == 'x86'
++          mfx_libdir = [mfx_root + '/lib/win32']
++        else
++          mfx_libdir = [mfx_root + '/lib/x64']
++        endif
+       endif
++      mfx_incdir = join_paths([mfx_root, 'include'])
++      mfx_lib = cxx.find_library('mfx', dirs: mfx_libdir, required: msdk_option)
++      mfx_inc = include_directories(mfx_incdir)
++      mfx_dep = declare_dependency(include_directories: mfx_inc, dependencies: mfx_lib)
++      use_msdk = true
+     endif
+-    mfx_incdir = join_paths([mfx_root, 'include'])
+-    mfx_lib = cxx.find_library('mfx', dirs: mfx_libdir, required: msdk_option)
+-    mfx_inc = include_directories(mfx_incdir)
+-    mfx_dep = declare_dependency(include_directories: mfx_inc, dependencies: mfx_lib)
+-  elif msdk_option.enabled()
+-    error('msdk plugin enabled but Intel Media SDK not found: consider setting PKG_CONFIG_PATH, INTELMEDIASDKROOT or MFX_HOME')
++  endif
++endif
++
++if not use_msdk and mfx_api != 'MSDK'
++  mfx_dep = dependency('vpl', version: '>= 2.2', required: false)
++
++  if mfx_dep.found()
++    mfx_incdir = mfx_dep.get_pkgconfig_variable('includedir')
++    mfx_inc = []
++    use_onevpl = true
++  endif
++endif
++
++if not use_msdk and not use_onevpl
++  if msdk_option.enabled()
++    error('msdk plugin enabled but the Intel Media SDK or the oneVPL SDK not found: consider setting PKG_CONFIG_PATH, INTELMEDIASDKROOT or MFX_HOME')
+   else
+     subdir_done()
+   endif
+ endif
+ 
+-# Old versions of MediaSDK don't have the 'mfx' directory prefix
+-if cxx.has_header('mfx/mfxdefs.h', args: '-I' + mfx_incdir)
++# Check oneVPL firstly
++if use_onevpl
++  mfx_incdir = join_paths([mfx_incdir, 'vpl'])
++  mfx_inc = include_directories(mfx_incdir)
++elif cxx.has_header('mfx/mfxdefs.h', args: '-I' + mfx_incdir)
+   mfx_incdir = join_paths([mfx_incdir, 'mfx'])
+   mfx_inc = include_directories(mfx_incdir)
+ endif
+ 
+-if cxx.has_header('mfxvp9.h', args: '-I' + mfx_incdir)
++if use_onevpl or cxx.has_header('mfxvp9.h', args: '-I' + mfx_incdir)
+   msdk_sources += [ 'gstmsdkvp9dec.c' ]
+   cdata.set10('USE_MSDK_VP9_DEC', 1)
+ endif
+-- 
+2.25.1
+
