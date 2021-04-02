@@ -1,7 +1,7 @@
-From bafed512d3f2c2ecd342bdb2b6faab92a550ec6c Mon Sep 17 00:00:00 2001
+From 400341a64407fb69fb8f3bc7ea3cc0bf2d5bf797 Mon Sep 17 00:00:00 2001
 From: Haihao Xiang <haihao.xiang@intel.com>
 Date: Tue, 4 Aug 2020 12:53:35 +0800
-Subject: [PATCH 2/3] msdk: needn't load user plugins for libmfx 2.0
+Subject: [PATCH 2/5] msdk: needn't load user plugins for libmfx 2.0
 
 libmfx no longer supports user plugins since version 2.0, please refer
 to the links below for details
@@ -14,10 +14,10 @@ https://github.com/oneapi-src/oneVPL
  2 files changed, 14 insertions(+)
 
 diff --git a/sys/msdk/msdk.c b/sys/msdk/msdk.c
-index 74ff13c77c43..e0c50ad9e96e 100644
+index df7fd7583..d0859912d 100644
 --- a/sys/msdk/msdk.c
 +++ b/sys/msdk/msdk.c
-@@ -498,6 +498,7 @@ gboolean
+@@ -492,6 +492,7 @@ gboolean
  gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
      mfxU32 version, const gchar * plugin)
  {
@@ -25,7 +25,7 @@ index 74ff13c77c43..e0c50ad9e96e 100644
    mfxStatus status;
  
    status = MFXVideoUSER_Load (session, uid, version);
-@@ -512,6 +513,7 @@ gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
+@@ -506,6 +507,7 @@ gst_msdk_load_plugin (mfxSession session, const mfxPluginUID * uid,
      GST_WARNING ("Media SDK Plugin for %s load warning: %s", plugin,
          msdk_status_to_string (status));
    }
@@ -34,7 +34,7 @@ index 74ff13c77c43..e0c50ad9e96e 100644
    return TRUE;
  }
 diff --git a/sys/msdk/msdk.h b/sys/msdk/msdk.h
-index 87867f6eda7d..8f11d80937d1 100644
+index 87867f6ed..8f11d8093 100644
 --- a/sys/msdk/msdk.h
 +++ b/sys/msdk/msdk.h
 @@ -43,7 +43,19 @@
@@ -58,5 +58,5 @@ index 87867f6eda7d..8f11d80937d1 100644
  G_BEGIN_DECLS
  
 -- 
-2.25.4
+2.25.1
 
